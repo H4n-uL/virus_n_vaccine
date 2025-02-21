@@ -17,12 +17,6 @@ class AntivirusEngine(ast.NodeVisitor):
         self.malseg: list[CodeSegment] = []
 
     def is_malware_function(self, node: ast.FunctionDef) -> bool:
-        file_access = [
-            n for n in ast.walk(node)
-            if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
-            and any(method in n.func.attr for method in ['glob', 'iterdir', 'rglob'])
-        ]
-
         writes = [
             n for n in ast.walk(node)
             if isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute)
@@ -41,7 +35,13 @@ class AntivirusEngine(ast.NodeVisitor):
             and n.func.id == 'exec'
         ]
 
-        return bool(writes and (self_reads or file_access or exec_calls))
+        eval_calls = [
+            n for n in ast.walk(node)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == 'eval'
+        ]
+
+        return bool(writes and (self_reads or exec_calls or eval_calls))
 
     def visit_FunctionDef(self, node: ast.FunctionDef):
         is_malware = self.is_malware_function(node)
