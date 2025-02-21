@@ -10,11 +10,11 @@ class CodeSegment:
     isfunc: bool
     name: str = ''
 
-class VirusDetector(ast.NodeVisitor):
+class AntivirusEngine(ast.NodeVisitor):
     def __init__(self):
-        self.functions: defaultdict[str, list[CodeSegment]] = defaultdict(list)
+        self.funcs: defaultdict[str, list[CodeSegment]] = defaultdict(list)
         self.calls: list[CodeSegment] = []
-        self.malware_segments: list[CodeSegment] = []
+        self.malseg: list[CodeSegment] = []
 
     def is_malware_function(self, node: ast.FunctionDef) -> bool:
         file_access = [
@@ -52,7 +52,7 @@ class VirusDetector(ast.NodeVisitor):
             isfunc = True,
             name = node.name
         )
-        self.functions[node.name].append(segment)
+        self.funcs[node.name].append(segment)
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call):
@@ -67,14 +67,15 @@ class VirusDetector(ast.NodeVisitor):
             self.calls.append(segment)
         self.generic_visit(node)
 
-    def analyze_code(self):
+    def analyze_code(self, data: str):
+        self.visit(ast.parse(data))
         malwares: defaultdict[str, list[CodeSegment]] = defaultdict(list)
-        for name, func_segments in self.functions.items():
+        for name, func_segments in self.funcs.items():
             for segment in func_segments:
                 if segment.is_malware: malwares[name].append(segment)
 
         for segments in malwares.values():
-            self.malware_segments.extend(segments)
+            self.malseg.extend(segments)
 
         for call in self.calls:
             if call.name in malwares:
@@ -82,7 +83,7 @@ class VirusDetector(ast.NodeVisitor):
                 for func_segment in malwares[call.name]:
                     if call.start > func_segment.start:
                         overwritten = False
-                        for clean_segment in self.functions[call.name]:
+                        for clean_segment in self.funcs[call.name]:
                             if (not clean_segment.is_malware and func_segment.start < clean_segment.start < call.start):
                                 overwritten = True
                                 break
@@ -90,42 +91,40 @@ class VirusDetector(ast.NodeVisitor):
                             active_malware = True
                             break
 
-                if active_malware: self.malware_segments.append(call)
+                if active_malware: self.malseg.append(call)
 
-def remove_malware(file_lns: list[str], malware_segments: list[CodeSegment]) -> list[str]:
-    malware_segments = sorted(malware_segments, key=lambda x: x.start, reverse=True)
+    def remove_malware(self, data: str) -> str:
+        data_lines = data.splitlines()
+        self.malseg = sorted(self.malseg, key=lambda x: x.start, reverse=True)
 
-    for seg in malware_segments:
-        if seg.isfunc: file_lns[seg.start:seg.end + 1] = ''
-        elif seg.start < len(file_lns):
-            line = file_lns[seg.start]
-            leading_whitespace = line[:len(line) - len(line.lstrip())]
+        for seg in self.malseg:
+            if seg.isfunc: data_lines[seg.start:seg.end + 1] = ''
+            elif seg.start < len(data_lines):
+                line = data_lines[seg.start]
+                leading_whitespace = line[:len(line) - len(line.lstrip())]
 
-            calls = [c.strip() for c in line.split(';') if c.strip()]
-            calls_cur = [c for c in calls if not re.fullmatch(rf'\b{re.escape(seg.name)}\s*\(.*?\)', c)]
-            if calls_cur: file_lns[seg.start] = leading_whitespace + ' ; '.join(calls_cur)
-            else: file_lns.pop(seg.start)
+                calls = [c.strip() for c in line.split(';') if c.strip()]
+                calls_cur = [c for c in calls if not re.fullmatch(rf'\b{re.escape(seg.name)}\s*\(.*?\)', c)]
+                if calls_cur: data_lines[seg.start] = leading_whitespace + ' ; '.join(calls_cur)
+                else: data_lines.pop(seg.start)
 
-    return file_lns
-
+        return '\n'.join(data_lines).strip()
 
 def cure_py(file: pathlib.Path):
     try:
         data = file.read_text()
-        tree = ast.parse(data)
 
-        detector = VirusDetector()
-        detector.visit(tree)
-        detector.analyze_code()
+        antivirus = AntivirusEngine()
+        antivirus.analyze_code(data)
+        if not antivirus.malseg: return
+        data_clean = antivirus.remove_malware(data)
 
-        if not detector.malware_segments: return
-        data_lines = data.splitlines()
-        cleaned_lines = remove_malware(data_lines, detector.malware_segments)
-        cleaned_data = '\n'.join(cleaned_lines).strip()
-        file.write_text(cleaned_data)
-
-        print(f"Cleaned {file}:")
-        print(f"- Removed {len(detector.malware_segments)} malicious segments")
+        if not data_clean:
+            file.unlink()
+            print(f"Removed {file} with {len(antivirus.malseg)} malicious segments")
+        else:
+            file.write_text(data_clean)
+            print(f"Cleaned {file} with {len(antivirus.malseg)} malicious segments")
 
     except Exception as e:
         print(f"Error processing {file}: {e}")
